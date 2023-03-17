@@ -1,52 +1,77 @@
+{-# LANGUAGE DeriveGeneric #-}
+
 module Poker where
 
-import Data.List (sort, sortBy, group)
+import Data.List (sort, sortBy)
+import Data.Ord (comparing)
 import GHC.Generics (Generic)
-import System.Random (Random(..), randomRIO)
+import System.Random (StdGen, randomR)
 
-data Suit = Clubs | Diamonds | Hearts | Spades deriving (Show, Eq, Enum, Bounded, Generic)
+data Suit = Clubs | Diamonds | Hearts | Spades
+  deriving (Eq, Ord, Enum, Bounded, Show, Read, Generic)
+
 data Rank = Two | Three | Four | Five | Six | Seven | Eight | Nine | Ten | Jack | Queen | King | Ace
-  deriving (Show, Eq, Ord, Enum, Bounded, Generic)
+  deriving (Eq, Ord, Enum, Bounded, Show, Read, Generic)
 
-data Card = Card { rank :: Rank, suit :: Suit } deriving (Eq, Generic)
-instance Show Card where
-  show (Card r s) = show r ++ " of " ++ show s
-
-data Hand = HighCard | Pair | TwoPair | ThreeOfAKind | Straight | Flush | FullHouse | FourOfAKind | StraightFlush
-  deriving (Show, Eq, Ord)
+data Card = Card { rank :: Rank, suit :: Suit }
+  deriving (Eq, Ord, Show, Read, Generic)
 
 type Deck = [Card]
-type Player = (String, [Card])  -- Player name and their hole cards
+type Hand = [Card]
+type Board = [Card]
+
+data PokerHand = HighCard | Pair | TwoPairs | ThreeOfAKind | Straight | Flush | FullHouse | FourOfAKind | StraightFlush | RoyalFlush
+  deriving (Eq, Ord, Enum, Bounded, Show, Read, Generic)
 
 
-shuffleDeck :: Deck -> IO Deck
-shuffleDeck deck = do
-  let indices = [0 .. length deck - 1]
-  shuffledIndices <- randomShuffle indices
-  return [deck !! i | i <- shuffledIndices]
+fullDeck :: Deck
+fullDeck = [Card r s | s <- [minBound .. maxBound], r <- [minBound .. maxBound]]
 
-randomShuffle :: [a] -> IO [a]
-randomShuffle [] = return []
-randomShuffle xs = do
-  i <- randomRIO (0, length xs - 1)
-  rest <- randomShuffle (take i xs ++ drop (i + 1) xs)
-  return (xs !! i : rest)
 
-dealCards :: Int -> Deck -> ([Player], Deck)
-dealCards numPlayers deck = (players, drop (2 * numPlayers) deck)
+shuffleDeck :: StdGen -> Deck -> Deck
+shuffleDeck _ [] = []
+shuffleDeck g deck = let (i, g') = randomR (0, length deck - 1) g
+                         (left, x:right) = splitAt i deck
+                     in x : shuffleDeck g' (left ++ right)
+
+
+dealCards :: Int -> Deck -> [(Hand, Deck)]
+dealCards n deck = deal n (map pure deck)
   where
-    players = [player i | i <- [1 .. numPlayers]]
-    player i = ("Player " ++ show i, take 2 . drop (2 * (i - 1)) $ deck)
+    deal _ [] = []
+    deal 0 _  = []
+    deal i d  = let (h, d') = splitAt n d in h : deal (i - 1) d'
 
 
-evaluateHand :: [Card] -> Hand
-evaluateHand cards = undefined  -- Implement hand evaluation logic
+evaluateHand :: Hand -> Board -> (PokerHand, [Card])
+evaluateHand hand board = bestHand $ map (`evaluate` allCards) [minBound .. maxBound]
+  where
+    allCards = hand ++ board
+    evaluate ph cs = (ph, bestCombination ph $ sort cs)
+    bestHand = maximumBy (comparing fst)
 
-compareHands :: ([Card], [Card]) -> Ordering
-compareHands (communityCards1, holeCards1) (communityCards2, holeCards2) =
-  compare (evaluateHand (communityCards1 ++ holeCards1)) (evaluateHand (communityCards2 ++ holeCards2))
+    bestCombination :: PokerHand -> [Card] -> [Card]
+    bestCombination HighCard = take 5
+    bestCombination Pair = bestGroup 2
+    bestCombination TwoPairs = \cs -> bestGroup 2 cs ++ bestGroup 2 (removeGroup 2 cs)
+    bestCombination ThreeOfAKind = bestGroup 3
+    bestCombination Straight = bestStraight
+    bestCombination Flush = \cs -> take 5 $ filter ((== bestSuit cs) . suit) cs
+    bestCombination FullHouse = \cs -> bestGroup 3 cs ++ bestGroup 2 cs
+    bestCombination FourOfAKind = bestGroup 4
+    bestCombination StraightFlush = \cs -> bestStraight $ filter ((== bestSuit cs) . suit) cs
+    bestCombination RoyalFlush = \cs -> bestStraight $ filter ((== bestSuit cs) . suit) cs
 
-determineWinner :: [Player] -> [Card] -> Player
-determineWinner players communityCards =
-  let rankedPlayers = sortBy (flip compareHands) [(holeCards, communityCards) | (_, holeCards) <- players]
-  in head rankedPlayers
+    bestSuit cs = snd . maximum . map (\s -> (length (filter ((== s) . suit) cs), s)) $ [minBound .. maxBound]
+
+    bestStraight cs = last . filter (isStraight . map rank) $ combinations 5 cs
+      where
+        isStraight rs = and . zipWith (==) rs $ tail rs
+
+    bestGroup n cs = last . filter ((== n) . length) $ combinations n cs
+
+    removeGroup n cs = filter (`notElem` bestGroup n cs) cs
+
+    combinations 0 _  = [[]]
+    combinations _ [] = []
+    combinations n (x:xs) = map (x:) (combinations (n - 1) xs) ++ combinations n xs
